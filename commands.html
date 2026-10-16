@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Commands</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: black; overflow: hidden; font-family: Arial, sans-serif; }
+        video { display: none; }
+        canvas {
+            position: absolute;
+            width: 100vw;
+            height: 100vh;
+        }
+        #sign {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 56px;
+            background: rgba(0,0,0,0.6);
+            padding: 10px 40px;
+            border-radius: 20px;
+            z-index: 10;
+            min-width: 280px;
+            text-align: center;
+        }
+        #status {
+            position: absolute;
+            top: 120px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #91b1ec;
+            font-size: 24px;
+            z-index: 10;
+        }
+        #history {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            color: white;
+            font-size: 18px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px 16px;
+            border-radius: 12px;
+            z-index: 10;
+            min-width: 140px;
+        }
+        #history div { opacity: 0.8; padding: 2px 0; }
+        #help {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #ddd;
+            font-size: 15px;
+            background: rgba(0,0,0,0.6);
+            padding: 10px 16px;
+            border-radius: 12px;
+            z-index: 10;
+            max-width: 95vw;
+            text-align: center;
+            line-height: 1.6;
+        }
+        #startBtn, #voiceBtn {
+            z-index: 10;
+            font-size: 20px;
+        }
+        #startBtn {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 20px 40px;
+        }
+        #voiceBtn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 8px 16px;
+            font-size: 16px;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+</head>
+<body>
+    <video id="webcamVideo" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="sign">&nbsp;</div>
+    <div id="status"></div>
+    <div id="history"><strong>Recent</strong></div>
+    <button id="voiceBtn">Voice: On</button>
+    <div id="help">
+        Open hand = Hello &nbsp;|&nbsp; Four fingers = Stop &nbsp;|&nbsp; Fist = Yes &nbsp;|&nbsp;
+        Thumbs up = Good &nbsp;|&nbsp; Thumbs down = Bad<br>
+        Thumb + pinky = Call me &nbsp;|&nbsp; Thumb + index + pinky = I love you &nbsp;|&nbsp;
+        Index + middle = Peace<br>
+        Index only = One &nbsp;|&nbsp; Thumb + index = L
+    </div>
+    <button id="startBtn">Start</button>
+
+    <script>
+        const webcamVideo = document.getElementById("webcamVideo");
+        const startBtn = document.getElementById("startBtn");
+        const voiceBtn = document.getElementById("voiceBtn");
+        const canvas = document.getElementById("overlay");
+        const ctx = canvas.getContext("2d");
+        const signDiv = document.getElementById("sign");
+        const statusDiv = document.getElementById("status");
+        const historyDiv = document.getElementById("history");
+
+        let voiceOn = true;
+        let currentSign = null;
+        let candidate = null;
+        let streak = 0;
+        let missingFrames = 0;
+        const HOLD_FRAMES = 6;    
+        const history = [];
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        resizeCanvas();
+        window.addEventListener("resize", resizeCanvas);
+
+        voiceBtn.addEventListener("click", () => {
+            voiceOn = !voiceOn;
+            voiceBtn.textContent = "Voice: " + (voiceOn ? "On" : "Off");
+            if (!voiceOn) speechSynthesis.cancel();
+        });
+
+  
+        const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+        
+        function fingerExtended(lm, tip, pip) {
+            return dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) * 1.05;
+        }
+
+        function getFingers(lm) {
+            const palm = dist(lm[0], lm[9]);
+            const thumb =
+                dist(lm[4], lm[17]) > dist(lm[3], lm[17]) * 1.05 &&
+                dist(lm[4], lm[5]) > palm * 0.55;
+            return {
+                thumb,
+                index: fingerExtended(lm, 8, 6),
+                middle: fingerExtended(lm, 12, 10),
+                ring: fingerExtended(lm, 16, 14),
+                pinky: fingerExtended(lm, 20, 18),
+            };
+        }
+
+        function classify(lm) {
+            const f = getFingers(lm);
+            const code = [f.thumb, f.index, f.middle, f.ring, f.pinky]
+                .map(v => (v ? 1 : 0)).join("");
+
+            switch (code) {
+                case "11111": return "Hello";
+                case "01111": return "Stop";
+                case "00000": return "Yes";
+                case "10000":
+                    
+                    return lm[4].y < lm[0].y ? "Good" : "Bad";
+                case "10001": return "Call me";
+                case "11001": return "I love you";
+                case "01100": return "Peace";
+                case "01000": return "One";
+                case "11000": return "L";
+                default: return null;
+            }
+        }
+
+        function announce(sign) {
+            history.unshift(sign);
+            if (history.length > 5) history.pop();
+            historyDiv.innerHTML = "<strong>Recent</strong>" +
+                history.map(s => "<div>" + s + "</div>").join("");
+
+            if (voiceOn && "speechSynthesis" in window) {
+                speechSynthesis.cancel();
+                speechSynthesis.speak(new SpeechSynthesisUtterance(sign));
+            }
+        }
+
+        function updateSign(detected) {
+            if (detected === candidate) {
+                streak++;
+            } else {
+                candidate = detected;
+                streak = 1;
+            }
+
+            if (candidate && streak >= HOLD_FRAMES && candidate !== currentSign) {
+                currentSign = candidate;
+                signDiv.textContent = currentSign;
+                announce(currentSign);
+            }
+
+            if (!candidate && streak >= HOLD_FRAMES) {
+                currentSign = null;
+                signDiv.innerHTML = "&nbsp;";
+            }
+        }
+
+        
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6,
+        });
+
+        hands.onResults((results) => {
+            const img = results.image;
+            const cw = canvas.width, ch = canvas.height;
+            const scale = Math.max(cw / img.width, ch / img.height);
+            const ox = (cw - img.width * scale) / 2;
+            const oy = (ch - img.height * scale) / 2;
+
+            ctx.save();
+            ctx.clearRect(0, 0, cw, ch);
+            ctx.translate(cw, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(img, ox, oy, img.width * scale, img.height * scale);
+
+            const toPx = (p) => ({ x: p.x * img.width * scale + ox, y: p.y * img.height * scale + oy });
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+                missingFrames = 0;
+                statusDiv.textContent = "";
+
+                ctx.strokeStyle = "#00FF00";
+                ctx.lineWidth = 3;
+                for (const [a, b] of HAND_CONNECTIONS) {
+                    const pa = toPx(lm[a]), pb = toPx(lm[b]);
+                    ctx.beginPath();
+                    ctx.moveTo(pa.x, pa.y);
+                    ctx.lineTo(pb.x, pb.y);
+                    ctx.stroke();
+                }
+                ctx.fillStyle = "#FF0000";
+                for (const p of lm) {
+                    const q = toPx(p);
+                    ctx.beginPath();
+                    ctx.arc(q.x, q.y, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                updateSign(classify(lm));
+            } else {
+                missingFrames++;
+                if (missingFrames > 10) {
+                    statusDiv.textContent = "Show your hand to the camera";
+                    updateSign(null);
+                }
+            }
+            ctx.restore();
+        });
+
+        startBtn.addEventListener("click", () => {
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
+                .then((stream) => {
+                    webcamVideo.srcObject = stream;
+                    startBtn.style.display = "none";
+                    statusDiv.textContent = "Show your hand to the camera";
+
+                    const camera = new Camera(webcamVideo, {
+                        onFrame: async () => { await hands.send({ image: webcamVideo }); },
+                        width: 1280, height: 720,
+                    });
+                    camera.start();
+                })
+                .catch((err) => alert(err.name + ": " + err.message));
+        });
+    </script>
+</body>
+</html>
