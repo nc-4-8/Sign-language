@@ -101,4 +101,3 @@ You can tweak these values in the script:
 
 ## License
 
-MIT. Add a `LICENSE` file if you want this to be official.
